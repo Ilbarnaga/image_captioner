@@ -11,8 +11,11 @@ env/
 # =========================
 # Project Specific
 # =========================
-# Ignore all images and text files inside the dataset folder
-dataset/
+# Ignore everything in the dataset folder
+dataset/*
+
+# ...But DO NOT ignore the .gitkeep file
+!dataset/.gitkeep
 
 # =========================
 # Sensitive Information
