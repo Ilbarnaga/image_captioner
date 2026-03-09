@@ -325,9 +325,9 @@ class Captioner:
         # Identify all target images in the dataset directory
         files = [f for f in self.dataset_dir.iterdir() if f.is_file() and f.suffix.lower() in valid_extensions]
 
-        print(f"\n{CYAN} ===== Found {BOLD}{len(files)}{NC}{CYAN} images. Starting captioning ====={NC}")
+        print(f"\n{CYAN} ===== Found {BOLD}{len(files)} images{NC}{CYAN}. Starting captioning ====={NC}")
         
         # Gather and execute all processing tasks concurrently
         await asyncio.gather(*(self._process_single_image(f) for f in files))
         
-        print (f"====={GREEN}{BOLD} 🎉 All captioning complete! ===== {NC}\n")
+        print (f"{GREEN}{BOLD} ===== 🎉 All captioning complete! ===== {NC}\n")
