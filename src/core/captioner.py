@@ -3,7 +3,8 @@ Core Captioner Orchestrator.
 
 This module provides the `Captioner` class, which manages the asynchronous pipeline
 for generating, validating, and saving image captions using Vision-Language Models (VLMs).
-It handles configuration loading, client initialization, and concurrent API request execution.
+It handles configuration loading, client initialization, concurrent API execution,
+and the advanced Hybrid Quality Control (Python + AI Judge) workflow.
 """
 
 import base64
@@ -18,6 +19,7 @@ from PIL import Image
 from src.ai_clients.base_client import AsyncVisionClient
 from src.ai_clients.openai_client import OpenAIVisionClient
 from src.ai_clients.claude_client import ClaudeVisionClient
+from src.ai_clients.gemini_client import GeminiVisionClient
 
 # --- Utility Imports ---
 from src.utils.cost_evaluator import CostEvaluator
@@ -42,30 +44,26 @@ class Captioner:
         print(f"\n{BOLD}{CYAN}🚀 Initializing AI Captioner")
         
         # --- Path Configurations ---
-        self.root            : Path = Path(__file__).resolve().parent.parent.parent
-        self.config_path     : Path = self.root / "config" / "config.yaml"
-        self.prompt_path     : Path = self.root / "src" / "prompting" / "captioning_prompt.txt"
-        self.dataset_dir     : Path = self.root / "dataset"
+        self.root               : Path = Path(__file__).resolve().parent.parent.parent
+        self.config_path        : Path = self.root / "config" / "config.yaml"
+        self.dataset_dir        : Path = self.root / "dataset"
+        self.caption_prompt_path: Path = self.root / "src" / "prompting" / "captioning_prompt.txt"
+        self.judge_prompt_path  : Path = self.root / "src" / "prompting" / "judgement_prompt.txt"
         
         # --- State Variables ---
-        self.config          : dict = {}
-        self.prompt          : str  = ""
+        self.config             : dict = {}
+        self.caption_prompt     : str  = ""
+        self.judge_prompt       : str  = ""
 
         # Load configurations and initialize external tools
         self._load_config()
         self._initialize_tools()
 
         # --- Concurrency Control ---
-        # Limits the number of simultaneous API calls to avoid rate limiting
-        self.semaphore       : asyncio.Semaphore = asyncio.Semaphore(self.config['app']['max_concurrent_requests'])
+        self.semaphore          : asyncio.Semaphore = asyncio.Semaphore(self.config['app']['max_concurrent_requests'])
 
     def _load_config(self) -> dict:
-        """
-        Reads and parses the primary configuration YAML file.
-
-        Raises:
-            SystemExit: If the configuration file cannot be found at `self.config_path`.
-        """
+        """Reads and parses the primary configuration YAML file."""
         if not self.config_path.exists():
             print(f"{RED}🚨 Config file not found at {BOLD}{self.config_path}!{NC}\n")
             sys.exit(1)
@@ -93,7 +91,8 @@ class Captioner:
         self.ai_client       : AsyncVisionClient = self._create_ai_client()
         self.checker         : QualityChecker    = self._create_quality_checker()
         self.cost_evaluator  : CostEvaluator     = self._create_cost_evaluator()
-        self.prompt          : str               = self._load_and_prepare_prompt()
+        self.caption_prompt  : str               = self._load_caption_prompt()
+        self.judge_prompt    : str               = self._load_judge_prompt()
         print()
 
     def _create_ai_client(self) -> AsyncVisionClient:
@@ -125,7 +124,7 @@ class Captioner:
                   f"(max tokens: {ORANGE}{max_tokens}{VIOLET}, temperature: {ORANGE}{temperature}{VIOLET}){NC}")
 
         # Route to OpenAI or Grok (Since they share the OpenAI SDK structure)
-        if active in ['openai', 'grok', 'xai']:
+        if active in ['openai', 'grok', 'xai', 'deepseek']:
             base_url = provider_settings.get('base_url')
             return OpenAIVisionClient(
                 api_key=api_key,
@@ -143,7 +142,16 @@ class Captioner:
                 max_tokens=max_tokens,
                 temperature=temperature
             )
-            
+        
+        # Route Google Gemini models
+        elif active in ['gemini', 'google']:
+            return GeminiVisionClient(
+                api_key=api_key,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+        
         else:
             raise ValueError(f"Unsupported active API provider: '{active}'")
 
@@ -158,8 +166,8 @@ class Captioner:
         min_words = self.config['lora']['min_words']
         max_words = self.config['lora']['max_words']
         
-        print(f"{VIOLET}🎯 Initializing quality checker with trigger word {ORANGE}{BOLD}{trigger_word}{NC}{VIOLET} "
-              f"(min words: {ORANGE}{min_words}{VIOLET}, max_words: {ORANGE}{max_words}{VIOLET}){NC}")
+        print(f"{VIOLET}🎯 Initializing mechanical QC with trigger {ORANGE}{BOLD}{trigger_word}{NC}{VIOLET} "
+              f"({ORANGE}{min_words}{VIOLET}-{ORANGE}{max_words}{VIOLET} words){NC}")
         
         return QualityChecker(
             trigger_word=trigger_word,
@@ -195,7 +203,7 @@ class Captioner:
             img_res=img_res
         )
 
-    def _load_and_prepare_prompt(self) -> str:
+    def _load_caption_prompt(self) -> str:
         """
         Loads the foundational text prompt from disk and injects specific configurations
         like the trigger word and target word counts.
@@ -206,22 +214,34 @@ class Captioner:
         Raises:
             SystemExit: If the text prompt file cannot be located.
         """
-        if not self.prompt_path.exists():
-            print(f"{RED}🚨 Prompt file not found at {BOLD}{self.prompt_path}!{NC}")
+        if not self.caption_prompt_path.exists():
+            print(f"{RED}🚨 Prompt file not found at {BOLD}{self.caption_prompt}!{NC}")
             sys.exit(1)
 
-        with self.prompt_path.open("r", encoding="utf-8") as file:
+        with self.caption_prompt_path.open("r", encoding="utf-8") as file:
             raw_prompt = file.read()
             
         trigger_word = self.config['lora']['trigger_word']
         min_words = self.config['lora']['min_words']
         max_words = self.config['lora']['max_words']
         
-        print(f"📝 {VIOLET}Loaded prompt from {ORANGE}{BOLD}{self.prompt_path.name}{NC}")
+        print(f"📝 {VIOLET}Loaded generation prompt from {ORANGE}{BOLD}{self.caption_prompt_path.name}{NC}")
         
         return raw_prompt.replace("[TRIGGER_WORD]", trigger_word)\
                          .replace("[MIN_WORDS]", str(min_words))\
                          .replace("[MAX_WORDS]", str(max_words))
+
+    def _load_judge_prompt(self) -> str:
+        """Loads the text-only AI Judge evaluation prompt."""
+        if not self.judge_prompt_path.exists():
+            print(f"{RED}🚨 Judge prompt file not found at {BOLD}{self.judge_prompt_path}!{NC}")
+            sys.exit(1)
+
+        with self.judge_prompt_path.open("r", encoding="utf-8") as file:
+            raw_prompt = file.read()
+            
+        print(f"⚖️  {VIOLET}Loaded AI Judge prompt from {ORANGE}{BOLD}{self.judge_prompt_path.name}{NC}")
+        return raw_prompt
 
 
     # ===== PIPELINE EXECUTION =====
@@ -255,11 +275,11 @@ class Captioner:
         
     async def _process_single_image(self, file_path: Path) -> None:
         """
-        The core pipeline logic for a single image. Handles preprocessing, API requests,
-        quality validation, auto-correction loops, and file output.
-
-        Args:
-            file_path (Path): The absolute or relative path to the image file.
+        The core pipeline logic featuring the Hybrid Validation Workflow:
+        1. VLM Generates Caption
+        2. Mechanical Checker validates density and trigger words
+        3. AI Judge validates semantic rules (Golden Rule, AI Slop)
+        4. Auto-correcting retry loop on failure.
         """
         txt_path = file_path.with_suffix('.txt')
         
@@ -270,43 +290,52 @@ class Captioner:
         async with self.semaphore:
             print(f"🔄 {VIOLET}Processing: {BOLD}{ORANGE}{file_path.name}{NC}")
             try:
-                # 1. Threaded Image Preprocessing (resizing and base64 encoding)
+                # Threaded Image Preprocessing (resizing and base64 encoding)
                 image_b64 = await asyncio.to_thread(
                     self._process_and_encode, str(file_path)
                 )
 
-                # 2. Self-Correcting Retry Loop
+                # Self-Correcting Retry Loop
                 attempts = 0
                 final_caption = ""
-                
-                # Create a localized copy of the prompt to safely modify it on failures
-                current_prompt = self.prompt 
+                current_prompt = self.caption_prompt 
                 
                 while attempts < self.config['app']['max_retries']:
                     attempts += 1
                     
-                    # Call the AI provider with the localized prompt
+                    # Call the AI Vision provider
                     caption = await self.ai_client.generate_caption(image_b64, current_prompt) 
                     
                     try:
-                        # 3. Quality Check Validation
+                        # 1st Gate: Mechanical Validation
                         self.checker.validate(caption)
-                        final_caption = caption
-                        break  # Passed QC, break the retry loop
+                        
+                        # 2nd Gate: AI Semantic Judge (Text-Only Request)
+                        print(f"{CYAN}⚖️  Running AI Judge on {file_path.name}...{NC}")
+                        judge_payload = self.judge_prompt.replace("[CAPTION_TEXT]", caption)
+                        judgment = await self.ai_client.generate_text(judge_payload)
+                        
+                        if judgment.strip().upper().startswith("TRUE"):
+                            final_caption = caption
+                            break  # Passed BOTH checks!
+                            
+                        else:
+                            # AI Judge Failed. Extract reason and trigger retry.
+                            reason = judgment.replace("FALSE:", "").strip()
+                            raise CaptionValidationError(f"AI Judge rejected caption: {reason}")
                         
                     except CaptionValidationError as e:
-                        # Log the QC failure
                         print(f"{YELLOW}⚠️  QC Failed on {BOLD}{file_path.name}{NC}{YELLOW} "
                               f"(Attempt {attempts}/{self.config['app']['max_retries']}): {e}")
                         
                         if attempts == self.config['app']['max_retries']:
-                            print(f"{RED}❌ Max retries reached for {file_path.name}. Skipping.")
+                            print(f"   {RED}❌ Max retries reached for {file_path.name}. Skipping.{NC}")
                             return
                         
-                        # Append the failure reason back to the prompt for the next loop to force correction
+                        # Append the failure reason to force self-correction
                         current_prompt += f"\n\nYOUR PREVIOUS ATTEMPT FAILED THE QUALITY CHECK: {str(e)}\nFix this immediately."
                 
-                # 4. Save Final Output
+                # Save Final Output
                 if final_caption:
                     with open(txt_path, "w", encoding="utf-8") as f:
                         f.write(final_caption)

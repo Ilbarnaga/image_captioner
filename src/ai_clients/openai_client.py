@@ -14,8 +14,8 @@ class OpenAIVisionClient(AsyncVisionClient):
     """
     Client for GPT-4o, Grok, and other OpenAI-compatible APIs.
 
-    This class wraps the official OpenAI async Python SDK, structuring the
-    payload with data URIs expected by OpenAI's multimodal completion endpoint.
+    This class wraps the official OpenAI async Python SDK, handling both 
+    multimodal image completion endpoints and standard text-only chat endpoints.
     """
     
     def __init__(
@@ -53,7 +53,6 @@ class OpenAIVisionClient(AsyncVisionClient):
         Returns:
             str: The stripped textual response returned by the target model.
         """
-        # Format the payload using the standard OpenAI chat completion spec
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -78,6 +77,28 @@ class OpenAIVisionClient(AsyncVisionClient):
             max_tokens=self.max_tokens,
             temperature=self.temperature
         )
-        
-        # Extract and return the raw text from the first choice message
         return response.choices[0].message.content.strip()
+
+    async def generate_text(self, prompt: str) -> str:
+        """
+        Generates a semantic text-only evaluation utilizing the standard chat endpoint.
+
+        Args:
+            prompt (str): The evaluation rubric and text payload to be judged.
+
+        Returns:
+            str: The AI's structural judgment output.
+        """
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            max_tokens=self.max_tokens,
+            temperature=self.temperature
+        )
+        return response.choices[0].message.content.strip()
+    

@@ -15,7 +15,7 @@ class ClaudeVisionClient(AsyncVisionClient):
     Client for Claude 3.5 Sonnet, Opus, and other Anthropic Vision APIs.
 
     This class wraps the official Anthropic async Python SDK, tailoring
-    the payload structure specifically to Claude's required message format.
+    the payload structure to Claude's strict multimodal and text message formats.
     """
     
     def __init__(
@@ -77,6 +77,28 @@ class ClaudeVisionClient(AsyncVisionClient):
             max_tokens=self.max_tokens,
             temperature=self.temperature
         )
-        
-        # Extract and return the raw text from the first content block
         return response.content[0].text.strip()
+
+    async def generate_text(self, prompt: str) -> str:
+        """
+        Generates a semantic text-only evaluation for the AI Judge system.
+
+        Args:
+            prompt (str): The evaluation rubric and the text to be analyzed.
+
+        Returns:
+            str: The strict True/False evaluation response from Claude.
+        """
+        response = await self.client.messages.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            max_tokens=self.max_tokens,
+            temperature=self.temperature
+        )
+        return response.content[0].text.strip()
+    

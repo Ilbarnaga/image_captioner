@@ -57,8 +57,8 @@ class CostEvaluator:
         Returns:
             int: The estimated number of input tokens consumed by the image.
         """
-        # OpenAI & Grok High-Detail: 170 per 512px tile + 85 base
-        if any(x in self.model for x in ['gpt', 'grok']):
+        # OpenAI, Grok, & DeepSeek High-Detail: 170 per 512px tile + 85 base
+        if any(x in self.model for x in ['gpt', 'grok', 'deepseek']):
             scale = 768 / min(width, height)
             w, h = width * scale, height * scale
             tiles = math.ceil(w / 512) * math.ceil(h / 512)
@@ -67,6 +67,10 @@ class CostEvaluator:
         # Claude Formula: Total Pixels / 750
         elif 'claude' in self.model:
             return math.ceil((width * height) / 750)
+            
+        # Gemini Formula: Fixed at exactly 258 tokens per image regardless of resolution
+        elif 'gemini' in self.model:
+            return 258
             
         return 1200 # Standard baseline fallback
 
@@ -90,22 +94,33 @@ class CostEvaluator:
 
     def calculate(self) -> dict:
         """
-        Outputs a dictionary of required tokens and USD cost.
+        Outputs a dictionary of required tokens and USD cost, including the AI Judge.
 
         Returns:
             dict: A structured dictionary containing image counts, token breakdowns,
                   and total estimated costs in USD. Returns an error dict if no new images are found.
         """
         image_count = self._get_unprocessed_count()
-        
         if image_count <= 0:
             return {"error": "No new images found for processing."}
 
-        # Calculate Tokens
-        # Assuming square resolution based on the app config constraint (img_res x img_res)
-        tokens_in_per_img = self._estimate_vision_tokens(self.img_res, self.img_res) + self.text_overhead
+        # --- 1. Vision Generation Tokens ---
+        # Assuming square resolution based on the app config constraint
+        vision_tokens_in = self._estimate_vision_tokens(self.img_res, self.img_res) + self.text_overhead
+        vision_tokens_out = self.max_tokens
+
+        # --- 2. AI Judge Tokens (Text Only) ---
+        # The judge reads its system prompt (~300 tokens) + the generated caption
+        judge_tokens_in = 300 + vision_tokens_out 
+        # The judge only outputs "TRUE" or a short 1-2 sentence explanation
+        judge_tokens_out = 50 
+
+        # --- 3. Total Math ---
+        tokens_in_per_img = vision_tokens_in + judge_tokens_in
+        tokens_out_per_img = vision_tokens_out + judge_tokens_out
+
         total_tokens_in = image_count * tokens_in_per_img
-        total_tokens_out = image_count * self.max_tokens
+        total_tokens_out = image_count * tokens_out_per_img
 
         # Calculate USD (Pricing in config is per 1 Million tokens)
         input_usd = (total_tokens_in / 1_000_000) * self.pricing['input']
@@ -124,3 +139,4 @@ class CostEvaluator:
                 "total": input_usd + output_usd
             }
         }
+    
