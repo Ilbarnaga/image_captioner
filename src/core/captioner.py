@@ -351,8 +351,13 @@ class Captioner:
         """
         valid_extensions = {'.png', '.jpg', '.jpeg', '.webp'}
         
-        # Identify all target images in the dataset directory
-        files = [f for f in self.dataset_dir.iterdir() if f.is_file() and f.suffix.lower() in valid_extensions]
+        # Identify all target images that do not already have a matching .txt file
+        files = [
+            f for f in self.dataset_dir.iterdir() 
+            if f.is_file() 
+            and f.suffix.lower() in valid_extensions 
+            and not f.with_suffix('.txt').exists()
+        ]
 
         print(f"\n{CYAN} ===== Found {BOLD}{len(files)} images{NC}{CYAN}. Starting captioning ====={NC}")
         
